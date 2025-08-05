@@ -8,9 +8,10 @@ from ..dataset import DataModel
 class CLIPExtractor(FeatureExtractor):
     """Экстрактор признаков CLIP OpenAI"""
     
-    def __init__(self):
-        super().__init__("CLIP")
-        self.model, self.preprocess = clip.load("ViT-B/32", device=self.device)
+    def __init__(self, model:str = None):
+        """Инициализация экстрактора CLIP"""
+        super().__init__("CLIP", model)
+        self.model, self.preprocess = clip.load(model, device=self.device)
         logger.success("Загрузка модели CLIP OpenAI завершена")
     
     def extract_single(self, data: DataModel) -> FeatureVector:

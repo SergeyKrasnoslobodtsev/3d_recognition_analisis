@@ -7,8 +7,8 @@ from ..dataset import DataModel
 class DINOExtractor(FeatureExtractor):
     """Экстрактор признаков DINO"""
     
-    def __init__(self):
-        super().__init__("DINO")
+    def __init__(self, model:str = None):
+        super().__init__("DINO", model)
 
         logger.info("Loading DINO model...")
     

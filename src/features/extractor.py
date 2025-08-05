@@ -14,8 +14,9 @@ import numpy as np
 from ..dataset import DataModel
 
 class ExtractorType(str, Enum):
-    CLIP = "clip"
-    DINO = "dino"
+    CLIP_B32 = "clip_b32"
+    CLIP_L14 = "clip_l14"
+    DINO_BASE = "dino_base"
     CNN_1D = "cnn_1d"
     BREPNET = "brepnet"
 
@@ -40,8 +41,9 @@ class FeatureDataset:
 class FeatureExtractor(ABC):
     """Абстрактный класс для извлечения признаков"""
     
-    def __init__(self, name: str):
+    def __init__(self, name: str, model: str = None):
         self.name = name
+        self.model = model
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"Инициализация {name} экстрактора признаков на устройстве {self.device}")
 
@@ -116,16 +118,19 @@ class FeatureIO:
 
 class FeatureExtractorFactory:
     """Фабрика для создания экстракторов признаков"""
-    
+    # ['RN50', 'RN101', 'RN50x4', 'RN50x16', 'RN50x64', 'ViT-B/32', 'ViT-B/16', 'ViT-L/14', 'ViT-L/14@336px']
     @staticmethod
     def create_extractor(extractor_type: ExtractorType) -> FeatureExtractor:
         """Создает экстрактор по типу"""
-        if extractor_type == ExtractorType.CLIP:
+        if extractor_type == ExtractorType.CLIP_B32:
             from .clip import CLIPExtractor
-            return CLIPExtractor()
-        elif extractor_type == ExtractorType.DINO:
+            return CLIPExtractor('ViT-B/32')
+        elif extractor_type == ExtractorType.CLIP_L14:
+            from .clip import CLIPExtractor
+            return CLIPExtractor('ViT-L/14')
+        elif extractor_type == ExtractorType.DINO_BASE:
             from .dinov2 import DINOExtractor
-            return DINOExtractor()
+            return DINOExtractor('facebook/dinov2-base')
         elif extractor_type == ExtractorType.CNN_1D:
             from .cnn_1d import CNN1DExtractor
             return CNN1DExtractor()

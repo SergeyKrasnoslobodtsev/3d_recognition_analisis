@@ -86,7 +86,7 @@ class DatasetProcessor:
             for subdir, files in structure_3d.items() 
             if subdir != '.'
         )
-
+        
         with tqdm(total=total_stp_files, desc="Обработка 3D моделей") as pbar:
             for subdir_3d, files_3d in structure_3d.items():
                 if subdir_3d == '.':
