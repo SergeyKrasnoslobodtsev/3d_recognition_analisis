@@ -9,12 +9,12 @@ class DINOExtractor(FeatureExtractor):
     
     def __init__(self):
         super().__init__("DINO")
-        # Здесь инициализация DINO модели
+
         logger.info("Loading DINO model...")
     
     def extract_single(self, data: DataModel) -> FeatureVector:
         """Извлекает DINO признаки из модели"""
-        # Здесь ваша логика извлечения DINO признаков
+
         # Пока заглушка
         feature_vector = np.random.rand(768)  # DINO обычно 768-мерный
         
