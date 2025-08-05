@@ -9,8 +9,7 @@ from typing import Optional
 from loguru import logger
 from tqdm import tqdm
 import typer
-
-from config import INTERIM_DATA_DIR, RAW_DATA_DIR
+from PIL import Image
 
 app = typer.Typer()
 
@@ -32,6 +31,10 @@ class ImageData:
     image_path: str
     model_type: str
 
+    def get_pil_image(self):
+        """Загружает изображение как PIL Image"""
+        return Image.open(self.image_path).convert("RGB")
+
 
 @dataclass
 class DataModel:
@@ -42,6 +45,7 @@ class DataModel:
 
     def add_image_data(self, image_data: ImageData) -> None:
         self.image_paths.append(image_data)
+    
 
 
 class DatasetProcessor:
@@ -234,30 +238,3 @@ class DatasetAnalyzer:
             logger.info(f"  {model_type}: {count}")
 
 
-@app.command()
-def main(
-    input_2d_path: Path = typer.Option(RAW_DATA_DIR / "2D", help="Путь к директории с 2D изображениями"),
-    input_3d_path: Path = typer.Option(RAW_DATA_DIR / "3D", help="Путь к директории с 3D моделями"),
-    output_path: Path = typer.Option(INTERIM_DATA_DIR / "dataset_metadata.pkl", help="Путь к выходному pickle файлу"),
-    show_stats: bool = typer.Option(True, help="Показать статистику датасета после создания"),
-):
-    """Создает метаданные датасета в формате pickle из сырых 3D моделей и 2D изображений."""
-
-    processor = DatasetProcessor()
-    io_handler = DatasetIO()
-    analyzer = DatasetAnalyzer()
-    
-    # Создаем датасет
-    dataset = processor.create_dataset(input_3d_path, input_2d_path)
-    
-    # Сохраняем датасет
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    io_handler.save_dataset_pickle(dataset, output_path)
-    
-    # Показываем статистику
-    if show_stats:
-        analyzer.print_dataset_stats(dataset)
-
-
-if __name__ == "__main__":
-    app()
