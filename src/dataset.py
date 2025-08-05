@@ -1,6 +1,5 @@
 from dataclasses import dataclass, field
 from enum import Enum
-import json
 import os
 from pathlib import Path
 import pickle
@@ -46,7 +45,7 @@ class DataModel:
 
 
 class DatasetProcessor:
-    """Класс для обработки датасета - следует принципу Single Responsibility"""
+    """Обработка raw данных для создания датасета"""
     
     @staticmethod
     def normalize_name(name: str) -> str:
@@ -83,8 +82,8 @@ class DatasetProcessor:
             for subdir, files in structure_3d.items() 
             if subdir != '.'
         )
-        
-        with tqdm(total=total_stp_files, desc="Processing 3D models") as pbar:
+
+        with tqdm(total=total_stp_files, desc="Обработка 3D моделей") as pbar:
             for subdir_3d, files_3d in structure_3d.items():
                 if subdir_3d == '.':
                     continue
@@ -106,8 +105,8 @@ class DatasetProcessor:
                     
                     models.append((subdir_3d, data_model))
                     pbar.update(1)
-        
-        logger.info(f"Processed {len(models)} 3D models")
+
+        logger.info(f"Обработано {len(models)} 3D моделей")
         return models
 
     def process_2d_images(self, models: list[tuple[str, DataModel]], 
@@ -115,7 +114,7 @@ class DatasetProcessor:
         """Обрабатывает 2D изображения и связывает их с 3D моделями"""
         dataset = []
         
-        with tqdm(models, desc="Linking 2D images") as pbar:
+        with tqdm(models, desc="Связывание 2D изображений") as pbar:
             for subdir_3d, data_model in pbar:
                 model_name_base = self.normalize_name(Path(data_model.model_path).name)
                 
@@ -168,7 +167,7 @@ class DatasetProcessor:
 
     def create_dataset(self, dir_3d: Path, dir_2d: Path) -> list[DataModel]:
         """Создает датасет, объединяя 3D модели с соответствующими 2D изображениями"""
-        logger.info("Starting dataset creation...")
+        logger.info("Создание датасета...")
         
         structure_3d = self.get_directory_structure(dir_3d)
         structure_2d = self.get_directory_structure(dir_2d)
@@ -178,33 +177,33 @@ class DatasetProcessor:
         
         # Связываем с 2D изображениями
         dataset = self.process_2d_images(models, structure_2d, dir_2d)
-        
-        logger.success(f"Dataset created successfully with {len(dataset)} models")
+
+        logger.success(f"Датасет успешно создан {len(dataset)} моделей")
         return dataset
 
 
 class DatasetIO:
-    """Класс для ввода/вывода датасета - следует принципу Single Responsibility"""
+    """Класс для ввода/вывода датасета"""
     
     @staticmethod
     def save_dataset_pickle(dataset: list[DataModel], filepath: Path) -> None:
         """Сохраняет датасет в pickle файл"""
-        logger.info(f"Saving dataset to {filepath}")
+        logger.info(f"Сохранение датасета в {filepath}")
         
         with open(filepath, 'wb') as f:
             pickle.dump(dataset, f)
         
-        logger.success(f"Dataset saved to {filepath}")
+        logger.success(f"Датасет сохранен в {filepath}")
 
     @staticmethod
     def load_dataset_pickle(filepath: Path) -> list[DataModel]:
         """Загружает датасет из pickle файла"""
-        logger.info(f"Loading dataset from {filepath}")
+        logger.info(f"Загрузка датасета из {filepath}")
         
         with open(filepath, 'rb') as f:
             dataset = pickle.load(f)
         
-        logger.success(f"Dataset loaded from {filepath}")
+        logger.success(f"Датасет загружен из {filepath}")
         return dataset
 
 
@@ -217,30 +216,30 @@ class DatasetAnalyzer:
         total_models = len(dataset)
         total_images = sum(len(model.image_paths) for model in dataset)
         models_with_images = sum(1 for model in dataset if model.image_paths)
-        
-        logger.info("Dataset Statistics:")
-        logger.info(f"Total 3D models: {total_models}")
-        logger.info(f"Total 2D images: {total_images}")
-        logger.info(f"Models with images: {models_with_images}")
-        logger.info(f"Models without images: {total_models - models_with_images}")
-        
+
+        logger.info("Статистика по датасету:")
+        logger.info(f"Всего 3D моделей: {total_models}")
+        logger.info(f"Всего 2D изображений: {total_images}")
+        logger.info(f"Моделей с изображениями: {models_with_images}")
+        logger.info(f"Моделей без изображений: {total_models - models_with_images}")
+
         # Статистика по типам изображений
         type_counts = {}
         for model in dataset:
             for image in model.image_paths:
                 type_counts[image.model_type] = type_counts.get(image.model_type, 0) + 1
-        
-        logger.info("Image type distribution:")
+
+        logger.info("Распределение типов изображений:")
         for model_type, count in sorted(type_counts.items()):
             logger.info(f"  {model_type}: {count}")
 
 
 @app.command()
 def main(
-    input_2d_path: Path = typer.Option(RAW_DATA_DIR / "2D", help="Path to 2D images directory"),
-    input_3d_path: Path = typer.Option(RAW_DATA_DIR / "3D", help="Path to 3D models directory"),
-    output_path: Path = typer.Option(INTERIM_DATA_DIR / "dataset_metadata.pkl", help="Output pickle file path"),
-    show_stats: bool = typer.Option(True, help="Show dataset statistics after creation"),
+    input_2d_path: Path = typer.Option(RAW_DATA_DIR / "2D", help="Путь к директории с 2D изображениями"),
+    input_3d_path: Path = typer.Option(RAW_DATA_DIR / "3D", help="Путь к директории с 3D моделями"),
+    output_path: Path = typer.Option(INTERIM_DATA_DIR / "dataset_metadata.pkl", help="Путь к выходному pickle файлу"),
+    show_stats: bool = typer.Option(True, help="Показать статистику датасета после создания"),
 ):
     """Создает метаданные датасета в формате pickle из сырых 3D моделей и 2D изображений."""
 
