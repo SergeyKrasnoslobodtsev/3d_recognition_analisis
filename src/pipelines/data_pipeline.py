@@ -1,5 +1,5 @@
 from pathlib import Path
-from loguru import logger
+
 import typer
 
 from ..config import INTERIM_DATA_DIR, RAW_DATA_DIR

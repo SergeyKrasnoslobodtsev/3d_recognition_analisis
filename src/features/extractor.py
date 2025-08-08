@@ -15,26 +15,25 @@ from ..dataset import DataModel
 
 class ExtractorType(str, Enum):
     CLIP_B32 = "clip_b32"
-    CLIP_L14 = "clip_l14"
     DINO_BASE = "dino_base"
-    CNN_1D = "cnn_1d"
-    BREPNET = "brepnet"
+    GOOGLE_B16 = "google_b16"
 
 @dataclass
 class FeatureVector:
     """Вектор признаков"""
     model_id: str
-    feature_vector: np.ndarray
-    extractor_type: str
-    detail_type: str
+    vector: np.ndarray
+    label: str
 
 @dataclass
 class FeatureDataset:
     """Датасет признаков"""
     features: list[FeatureVector]
     extractor_type: str
-    feature_dimension: int
-    
+
+    def add_vector(self, model_id: str, feature_vector: np.ndarray, label: str) -> None:
+        self.features.append(FeatureVector(model_id=model_id, vector=feature_vector, label=label))
+
     def __len__(self) -> int:
         return len(self.features)
 
@@ -52,10 +51,6 @@ class FeatureExtractor(ABC):
         """Извлекает признаки из одной модели"""
         pass
     
-    @abstractmethod
-    def get_feature_dimension(self) -> int:
-        """Возвращает размерность извлекаемых признаков"""
-        pass
 
     @staticmethod
     def _aggregate_features(feature_vectors: np.ndarray, method: str = 'mean') -> np.ndarray:
@@ -63,7 +58,7 @@ class FeatureExtractor(ABC):
         if method == 'mean':
             return np.mean(feature_vectors, axis=0)
         elif method == 'max':
-            return np.max(feature_vectors, axis=0)
+            return np.amax(feature_vectors, axis=0)
         else:
             raise ValueError(f"Неизвестный метод агрегации: {method}. Используйте 'mean' или 'max'.")
 
@@ -84,8 +79,7 @@ class FeatureExtractor(ABC):
         
         feature_dataset = FeatureDataset(
             features=features,
-            extractor_type=self.name,
-            feature_dimension=self.get_feature_dimension()
+            extractor_type=self.name
         )
 
         logger.success(f"Извлечено {len(features)} векторов признаков с использованием {self.name}")
@@ -124,19 +118,13 @@ class FeatureExtractorFactory:
         """Создает экстрактор по типу"""
         if extractor_type == ExtractorType.CLIP_B32:
             from .clip import CLIPExtractor
-            return CLIPExtractor('ViT-B/32')
-        elif extractor_type == ExtractorType.CLIP_L14:
-            from .clip import CLIPExtractor
-            return CLIPExtractor('ViT-L/14')
+            return CLIPExtractor()
         elif extractor_type == ExtractorType.DINO_BASE:
             from .dinov2 import DINOExtractor
-            return DINOExtractor('facebook/dinov2-base')
-        elif extractor_type == ExtractorType.CNN_1D:
-            from .cnn_1d import CNN1DExtractor
-            return CNN1DExtractor()
-        elif extractor_type == ExtractorType.BREPNET:
-            from .brepnet import BRepNetExtractor
-            return BRepNetExtractor()
+            return DINOExtractor()
+        elif extractor_type == ExtractorType.GOOGLE_B16:
+            from .google_vit import GoogleVitExtractor
+            return GoogleVitExtractor()
         else:
             raise ValueError(f"Неизвестный тип экстрактора: {extractor_type}")
 

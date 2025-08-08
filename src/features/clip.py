@@ -10,6 +10,9 @@ class CLIPExtractor(FeatureExtractor):
     
     def __init__(self, model:str = None):
         """Инициализация экстрактора CLIP"""
+        if model is None:
+            model = "ViT-B/32"
+
         super().__init__("CLIP", model)
         self.model, self.preprocess = clip.load(model, device=self.device)
         logger.success("Загрузка модели CLIP OpenAI завершена")
@@ -35,14 +38,10 @@ class CLIPExtractor(FeatureExtractor):
             
             return FeatureVector(
                         model_id=data.model_id,
-                        feature_vector=aggregated_vector,
-                        extractor_type="clip",
-                        detail_type=data.detail_type
+                        vector=aggregated_vector,
+                        label=data.detail_type
                     )
         
         except Exception as e:
             logger.error(f"Не удалось извлечь признаки для {data.model_id}: {e}")
             return None 
-    
-    def get_feature_dimension(self) -> int:
-        return 512

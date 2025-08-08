@@ -46,7 +46,12 @@ class DataModel:
     def add_image_data(self, image_data: ImageData) -> None:
         self.image_paths.append(image_data)
     
-
+    def get_images(self) -> list[Image.Image]:
+        """Возвращает список PIL изображений для данной модели"""
+        images = []
+        for img_data in self.image_paths:
+            images.append(img_data.get_pil_image())
+        return images
 
 class DatasetProcessor:
     """Обработка raw данных для создания датасета"""

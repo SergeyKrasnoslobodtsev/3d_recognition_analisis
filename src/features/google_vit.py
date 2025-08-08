@@ -4,15 +4,15 @@ import numpy as np
 from .extractor import FeatureExtractor, FeatureVector
 from ..dataset import DataModel
 
-class DINOExtractor(FeatureExtractor):
-    """Экстрактор признаков Facebook DINO"""
-    
+class GoogleVitExtractor(FeatureExtractor):
+    """Экстрактор признаков для Google Vision Transformer"""
+
     def __init__(self, model: str = None):
         if model is None:
-            model = "facebook/dinov2-base"
-
-        super().__init__(name="DINOv2", model=model)
-
+            model = "google/vit-base-patch16-384"
+        
+        super().__init__(name="GoogleVit", model=model)
+        
         self.pipe = pipeline(task="image-feature-extraction", model_name=model, framework="pt", pool=True)
         
     def extract_single(self, data: DataModel) -> FeatureVector:
@@ -26,4 +26,3 @@ class DINOExtractor(FeatureExtractor):
             vector=aggregated_feature,
             label=data.detail_type
         )
-    
