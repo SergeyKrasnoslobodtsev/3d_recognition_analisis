@@ -17,6 +17,7 @@ class ExtractorType(str, Enum):
     CLIP_B32 = "clip_b32"
     DINO_BASE = "dino_base"
     GOOGLE_B16 = "google_b16"
+    BREP = "brep"
 
 @dataclass
 class FeatureVector:
@@ -125,6 +126,9 @@ class FeatureExtractorFactory:
         elif extractor_type == ExtractorType.GOOGLE_B16:
             from .google_vit import GoogleVitExtractor
             return GoogleVitExtractor()
+        elif extractor_type == ExtractorType.BREP:
+                from .brep import BrepExtractor
+                return BrepExtractor()
         else:
             raise ValueError(f"Неизвестный тип экстрактора: {extractor_type}")
 
