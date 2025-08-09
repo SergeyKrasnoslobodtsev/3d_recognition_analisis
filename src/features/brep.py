@@ -13,7 +13,7 @@ from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
 from OCC.Core.GeomAbs import (GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_Cone,
                                GeomAbs_Sphere, GeomAbs_Torus)
-
+from OCC.Core.IFSelect import IFSelect_RetDone
 
 class BrepExtractor(FeatureExtractor):
     
@@ -23,37 +23,42 @@ class BrepExtractor(FeatureExtractor):
         self.model = model
         logger.info(f"Инициализация {self.name} экстрактора признаков")
 
-    def extract_single(self, data: DataModel) -> FeatureVector:
+    def extract_single(self, data: DataModel) -> FeatureVector | None:
         """
         Извлекает признаки для 3D-модели, усредняя векторы признаков со всех её граней.
         """
         reader = STEPControl_Reader()
-        if not reader.ReadFile(data.model_path):
-            raise RuntimeError(f"Не удалось прочитать файл: {data.model_path}")
+        status = reader.ReadFile(data.model_path)
+        if status != IFSelect_RetDone:
+            logger.error(f"Не удалось прочитать STEP: {data.model_path} (status={status})")
+            return None
             
-        reader.TransferRoots()
-        shape = reader.Shape(1)
+        try:
+            reader.TransferRoots()
+            shape = reader.OneShape()
+        except Exception as e:
+            logger.error(f"Ошибка Transfer/OneShape для {data.model_path}: {e}")
+            return None
 
         if shape.IsNull():
-            raise ValueError("В файле не найдена геометрия (shape is null)")
+            logger.warning(f"В файле не найдена геометрия (shape is null): {data.model_path}")
+            return None
 
         face_explorer = TopExp_Explorer(shape, TopAbs_FACE)
         all_face_features = []
         
-        # Собираем векторы признаков с каждой грани
         while face_explorer.More():
             face = face_explorer.Current()
-            # Используем ваш метод для получения признаков одной грани
-            face_features = self.get_face_features(face)
-            all_face_features.append(face_features)
+            try:
+                face_features = self.get_face_features(face)
+                all_face_features.append(face_features)
+            except Exception as e:
+                logger.warning(f"BRep: ошибка извлечения признаков грани: {e}")
             face_explorer.Next()
         
-        # Усредняем признаки по всем граням, чтобы получить один вектор для модели
         if all_face_features:
             final_feature_vector = np.mean(all_face_features, axis=0, dtype=np.float32)
         else:
-            # Если в модели нет граней, возвращаем нулевой вектор.
-            # Длина 12 соответствует выходу get_face_features.
             final_feature_vector = np.zeros(12, dtype=np.float32)
 
         return FeatureVector(
@@ -64,7 +69,7 @@ class BrepExtractor(FeatureExtractor):
     
     @staticmethod  
     def get_face_features(face) -> list[float]:
-        # Эта функция остается без изменений
+        
         props = GProp_GProps()
         brepgprop.SurfaceProperties(face, props)
         area = props.Mass()

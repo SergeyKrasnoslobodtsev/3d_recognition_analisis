@@ -3,10 +3,9 @@ from pathlib import Path
 from loguru import logger
 import pandas as pd
 import typer
-import numpy as np
 
 from ..features.extractor import ExtractorType, FeatureDataset, FeatureIO
-from ..config import INTERIM_DATA_DIR, FIGURES_DIR
+from ..config import INTERIM_DATA_DIR, FIGURES_DIR, REPORTS_DIR
 from ..plots import (
     plot_similarity_heatmap, 
     plot_matrix_error, 
@@ -246,11 +245,16 @@ def compare(
              'classes', 
              'feature_dim', 
              'map', 
-             'silhouette', 
+             'silhouette', +
              'intra_class_distance',
              'inter_class_distance',
              'separation_ratio']]
-    
+
+    # сохраняем отчет csv
+    report_path = REPORTS_DIR / "feature_comparison_report.csv"
+    df.to_csv(report_path, index=False)
+    logger.success(f"Отчет сохранен: {report_path}")
+
     logger.info("Сравнение экстракторов:")
     logger.info(f"\n{df.to_string(index=False, float_format='%.3f')}")
 

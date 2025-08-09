@@ -11,6 +11,11 @@ from tqdm import tqdm
 import typer
 from PIL import Image
 
+import pyvista as pv
+import trimesh
+
+import numpy as np
+
 app = typer.Typer()
 
 
@@ -23,6 +28,7 @@ class ModelType(str, Enum):
     TOP = 'top'
     ISOMETRIC = 'isometric'
     TRIMETRIC = 'trimetric'
+    RENDERED_VIEW = 'rendered_view'
 
 
 @dataclass
@@ -190,6 +196,122 @@ class DatasetProcessor:
         logger.success(f"Датасет успешно создан {len(dataset)} моделей")
         return dataset
 
+    def _render_model_views(self, model_path: Path, output_dir: Path, num_views: int = 36):
+        """
+        Рендерит виды модели.
+        coverage:
+          - "ring"  — орбита по одной широте (старое поведение)
+          - "sphere"— равномерно по сфере (со всех сторон)
+        """
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            mesh_trimesh = trimesh.load(str(model_path), force='mesh')
+            mesh_trimesh.apply_translation(-mesh_trimesh.center_mass)
+            mesh = pv.wrap(mesh_trimesh)
+
+            plotter = pv.Plotter(off_screen=True, window_size=[512, 512])
+            plotter.set_background('black')
+            plotter.add_mesh(mesh, color='white', smooth_shading=True)
+            plotter.enable_anti_aliasing()
+            plotter.reset_camera(bounds=mesh.bounds)
+            # Прогрев рендера
+            plotter.show(auto_close=False, interactive=False)
+
+            xmin, xmax, ymin, ymax, zmin, zmax = mesh.bounds
+            diag = np.linalg.norm([xmax - xmin, ymax - ymin, zmax - zmin])
+            r = max(1e-6, 1.75 * diag)
+            cx, cy, cz = mesh.center
+
+            def safe_up(cam_pos: np.ndarray, center: np.ndarray) -> np.ndarray:
+                # Строим up, перпендикулярный лучу взгляда, избегая вырождения у полюсов
+                d = center - cam_pos
+                d /= (np.linalg.norm(d) + 1e-12)
+                ref = np.array([0.0, 0.0, 1.0]) if abs(d[2]) < 0.9 else np.array([0.0, 1.0, 0.0])
+                right = np.cross(ref, d)
+                if np.linalg.norm(right) < 1e-6:
+                    ref = np.array([1.0, 0.0, 0.0])
+                    right = np.cross(ref, d)
+                right /= (np.linalg.norm(right) + 1e-12)
+                up = np.cross(d, right)
+                up /= (np.linalg.norm(up) + 1e-12)
+                return up
+
+            # Полное покрытие сферы: Fibonacci sphere (равномерные направления)
+            golden_angle = np.pi * (3.0 - np.sqrt(5.0))
+            N = max(1, int(num_views))
+            center = np.array([cx, cy, cz], dtype=float)
+
+            for i in range(N):
+                z = 1.0 - 2.0 * ((i + 0.5) / N)            # [-1, 1]
+                rho = np.sqrt(max(0.0, 1.0 - z * z))
+                theta = i * golden_angle
+                nx = np.cos(theta) * rho
+                ny = np.sin(theta) * rho
+                nz = z
+                pos = center + r * np.array([nx, ny, nz], dtype=float)
+
+                up = safe_up(pos, center)
+
+                cam = plotter.camera
+                cam.position = tuple(pos.tolist())
+                cam.focal_point = (cx, cy, cz)
+                cam.up = tuple(up.tolist())
+                plotter.render()
+
+                output_path = output_dir / f"frame_{i:03d}.png"
+                plotter.screenshot(output_path)
+
+            plotter.close()
+        except Exception as e:
+            logger.error(f"Не удалось отрендерить модель {model_path.resolve()}: {e}")
+
+    def _link_rendered_images(self, data_model: DataModel, rendered_views_dir: Path):
+        """Находит отрендеренные изображения и добавляет их в DataModel."""
+        model_name_base = self.normalize_name(Path(data_model.model_path).name)
+        # Путь к папке с изображениями для конкретной модели
+        images_dir = rendered_views_dir / data_model.detail_type / model_name_base
+        
+        if not images_dir.exists():
+            return
+
+        for image_file in images_dir.glob('*.png'):
+            image_data = ImageData(
+                image_id=f"{data_model.model_id}_{image_file.stem}",
+                image_path=str(image_file),
+                model_type=ModelType.RENDERED_VIEW.value
+            )
+            data_model.add_image_data(image_data)
+
+    def create_dataset_from_3d(self, dir_3d: Path, rendered_views_dir: Path, num_views: int = 36) -> list[DataModel]:
+        """
+        Создает датасет, генерируя 2D изображения из 3D моделей.
+        """
+        logger.info("Создание датасета из 3D моделей...")
+        
+        structure_3d = self.get_directory_structure(dir_3d)
+        
+        # 1. Обрабатываем 3D модели для создания базовых DataModel
+        models_tuples = self.process_3d_files(structure_3d, dir_3d)
+        dataset = [model for _, model in models_tuples]
+
+        # 2. Рендерим каждую модель и связываем изображения
+        with tqdm(dataset, desc="Рендеринг и связывание видов") as pbar:
+            for data_model in pbar:
+                model_name_base = self.normalize_name(Path(data_model.model_path).name)
+                output_dir = rendered_views_dir / data_model.detail_type / model_name_base
+                
+                # Рендерим виды
+                self._render_model_views(Path(data_model.model_path), output_dir, num_views)
+                
+                # Связываем созданные изображения с моделью
+                self._link_rendered_images(data_model, rendered_views_dir)
+                
+                pbar.set_postfix(images=len(data_model.image_paths))
+                # break # хардкординг
+
+        logger.success(f"Датасет успешно создан. Моделей: {len(dataset)}")
+        return dataset
 
 class DatasetIO:
     """Класс для ввода/вывода датасета"""

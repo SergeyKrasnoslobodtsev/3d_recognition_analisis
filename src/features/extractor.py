@@ -7,7 +7,7 @@ import pickle
 
 from loguru import logger
 import torch
-from tqdm import tqdm
+
 
 import numpy as np
 
@@ -41,10 +41,12 @@ class FeatureDataset:
 class FeatureExtractor(ABC):
     """Абстрактный класс для извлечения признаков"""
     
-    def __init__(self, name: str, model: str = None):
+    def __init__(self, name: str, model: str = None, aggregate_method: str = "mean"):
         self.name = name
         self.model = model
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.aggregate_method = aggregate_method
+        self.attention_pool = None 
         logger.info(f"Инициализация {name} экстрактора признаков на устройстве {self.device}")
 
     @abstractmethod
@@ -53,21 +55,36 @@ class FeatureExtractor(ABC):
         pass
     
 
-    @staticmethod
-    def _aggregate_features(feature_vectors: np.ndarray, method: str = 'mean') -> np.ndarray:
+    def set_aggregate_method(self, method: str):
+        if method not in ("mean", "max", "attention"):
+            raise ValueError("aggregate_method должен быть 'mean' | 'max' | 'attention'")
+        self.aggregate_method = method
+
+    def set_attention_pool(self, attention_pool) -> None:
+        """Установить attention-пулинг (объект с методом pool)"""
+        self.attention_pool = attention_pool
+
+    def _aggregate_features(self, feature_vectors: np.ndarray) -> np.ndarray:
         """Агрегирует массив векторов признаков (для одной модели) в один вектор"""
-        if method == 'mean':
+        if feature_vectors.ndim != 2:
+            feature_vectors = feature_vectors.reshape(-1, feature_vectors.shape[-1])
+        if self.aggregate_method == 'mean':
             return np.mean(feature_vectors, axis=0)
-        elif method == 'max':
+        elif self.aggregate_method == 'max':
             return np.amax(feature_vectors, axis=0)
+        elif self.aggregate_method == 'attention':
+            if self.attention_pool is None:
+                raise ValueError("Attention-пулинг не задан. Вызовите set_attention_pool(...)")
+            return self.attention_pool.pool(feature_vectors)
         else:
-            raise ValueError(f"Неизвестный метод агрегации: {method}. Используйте 'mean' или 'max'.")
+            raise ValueError(f"Неизвестный метод агрегации: {self.aggregate_method}")
 
     def extract_batch(self, datasets: list[DataModel]) -> FeatureDataset:
         """Извлекает признаки из батча данных"""
         logger.info(f"Извлечение признаков с использованием {self.name} для {len(datasets)} моделей")
 
         features = []
+        from tqdm import tqdm
         with tqdm(datasets, desc=f"Извлечение признаков {self.name}") as pbar:
             for data_model in pbar:
                 try:
