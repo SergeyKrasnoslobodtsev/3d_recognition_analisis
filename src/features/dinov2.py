@@ -15,7 +15,7 @@ class DINOExtractor(FeatureExtractor):
 
         super().__init__(name="DINOv2", model=model)
 
-        self.pipe = pipeline(task="image-feature-extraction", model_name=model, framework="pt", pool=True)
+        self.pipe = pipeline(task="image-feature-extraction", model_name=model, framework="pt", pool=True, batch_size=8, device=self.device)
     
     def _to_vector(self, out) -> np.ndarray:
         arr = np.array(out)

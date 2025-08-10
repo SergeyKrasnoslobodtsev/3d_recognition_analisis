@@ -245,7 +245,7 @@ def compare(
              'classes', 
              'feature_dim', 
              'map', 
-             'silhouette', +
+             'silhouette', 
              'intra_class_distance',
              'inter_class_distance',
              'separation_ratio']]

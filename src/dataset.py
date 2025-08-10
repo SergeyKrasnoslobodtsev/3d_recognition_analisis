@@ -211,8 +211,8 @@ class DatasetProcessor:
             mesh = pv.wrap(mesh_trimesh)
 
             plotter = pv.Plotter(off_screen=True, window_size=[512, 512])
-            plotter.set_background('black')
-            plotter.add_mesh(mesh, color='white', smooth_shading=True)
+            plotter.set_background('white')
+            plotter.add_mesh(mesh, color='green', smooth_shading=True)
             plotter.enable_anti_aliasing()
             plotter.reset_camera(bounds=mesh.bounds)
             # Прогрев рендера
