@@ -15,8 +15,12 @@ from ..dataset import DataModel
 
 class ExtractorType(str, Enum):
     CLIP_B32 = "clip_b32"
+    CLIP_B16 = "clip_b16"
+    CLIP_L14 = "clip_l14"
     DINO_BASE = "dino_base"
-    GOOGLE_B16 = "google_b16"
+    GOOGLE_B16_384 = "google_b16_384"
+    GOOGLE_B16_224 = "google_b16_224"
+
     BREP = "brep"
 
 @dataclass
@@ -137,15 +141,24 @@ class FeatureExtractorFactory:
         if extractor_type == ExtractorType.CLIP_B32:
             from .clip import CLIPExtractor
             return CLIPExtractor()
+        elif extractor_type == ExtractorType.CLIP_B16:
+            from .clip import CLIPExtractor
+            return CLIPExtractor(model="ViT-B/16")
+        elif extractor_type == ExtractorType.CLIP_L14:
+            from .clip import CLIPExtractor
+            return CLIPExtractor(model="ViT-L/14")
         elif extractor_type == ExtractorType.DINO_BASE:
             from .dinov2 import DINOExtractor
             return DINOExtractor()
-        elif extractor_type == ExtractorType.GOOGLE_B16:
+        elif extractor_type == ExtractorType.GOOGLE_B16_384:
             from .google_vit import GoogleVitExtractor
             return GoogleVitExtractor()
+        elif extractor_type == ExtractorType.GOOGLE_B16_224:
+            from .google_vit import GoogleVitExtractor
+            return GoogleVitExtractor(model="google/vit-base-patch16-224")
         elif extractor_type == ExtractorType.BREP:
-                from .brep import BrepExtractor
-                return BrepExtractor()
+            from .brep import BrepExtractor
+            return BrepExtractor()
         else:
             raise ValueError(f"Неизвестный тип экстрактора: {extractor_type}")
 

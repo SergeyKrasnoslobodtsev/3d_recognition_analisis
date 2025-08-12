@@ -9,7 +9,7 @@ def test_analize_features():
         extractor_type=None,
         features_dir=INTERIM_DATA_DIR,
         analyze_all=True,
-        show_plots=True,
+        show_plots=False,
         save_plots=True
     )
 
