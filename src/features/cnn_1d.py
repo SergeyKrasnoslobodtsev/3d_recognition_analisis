@@ -16,14 +16,10 @@ class CNN1DExtractor(FeatureExtractor):
         """Извлекает CNN 1D признаки из модели"""
         # Здесь ваша логика извлечения CNN 1D признаков
         # Пока заглушка
-        feature_vector = np.random.rand(768)  # CNN 1D обычно 768-мерный
+        feature_vector = np.random.rand(10)  
 
         return FeatureVector(
-            model_id=data.model_id,
-            feature_vector=feature_vector,
-            extractor_type="cnn_1d",
-            detail_type=data.detail_type
-        )
-    
-    def get_feature_dimension(self) -> int:
-        return 768
+                        model_id=data.model_id,
+                        vector=feature_vector,
+                        label=data.detail_type
+                    )

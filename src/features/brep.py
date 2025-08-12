@@ -71,7 +71,7 @@ class BrepExtractor(FeatureExtractor):
 
             # 5. Конкатенация всех признаков в строгом порядке
             feature_vec = np.concatenate([
-                rdf,
+                rdf, 
                 h_edge,
                 h_area,
                 h_dih,
@@ -227,7 +227,7 @@ class BrepExtractor(FeatureExtractor):
         return deg
 
     @staticmethod
-    def hist_norm(x: np.ndarray, bins: int, rng: tuple = None, log: bool = False):
+    def hist_norm(x: np.ndarray, bins: int, rng: tuple = None, log: bool = False): # type: ignore
         """Вычисляет нормализованную гистограмму для заданного массива."""
         if x.size == 0:
             return np.zeros(bins, dtype=np.float32)
@@ -382,7 +382,7 @@ class BrepExtractor(FeatureExtractor):
         
         with warnings.catch_warnings():
             warnings.filterwarnings('ignore', message='The problem size')
-            evals, evecs = spla.eigsh(L, k=k_solve, M=sp.diags(M_diag), sigma=1e-8, which='LM', tol=1e-4)
+            evals, evecs = spla.eigsh(L, k=k_solve, M=sp.diags(M_diag), sigma=1e-8, which='LM', tol=0)
         
         order = np.argsort(evals)
         evals = evals[order]
