@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from abc import ABC, abstractmethod
 from enum import Enum
-
+from typing import Any
 import pickle
 
 from loguru import logger
@@ -27,7 +27,7 @@ class ExtractorType(str, Enum):
 class FeatureVector:
     """Вектор признаков"""
     model_id: str
-    vector: np.ndarray
+    vector: Any
     label: str
 
 @dataclass
@@ -36,7 +36,7 @@ class FeatureDataset:
     features: list[FeatureVector]
     extractor_type: str
 
-    def add_vector(self, model_id: str, feature_vector: np.ndarray, label: str) -> None:
+    def add_vector(self, model_id: str, feature_vector: Any, label: str) -> None:
         self.features.append(FeatureVector(model_id=model_id, vector=feature_vector, label=label))
 
     def __len__(self) -> int:
@@ -134,7 +134,7 @@ class FeatureIO:
 
 class FeatureExtractorFactory:
     """Фабрика для создания экстракторов признаков"""
-    # ['RN50', 'RN101', 'RN50x4', 'RN50x16', 'RN50x64', 'ViT-B/32', 'ViT-B/16', 'ViT-L/14', 'ViT-L/14@336px']
+
     @staticmethod
     def create_extractor(extractor_type: ExtractorType) -> FeatureExtractor:
         """Создает экстрактор по типу"""

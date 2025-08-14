@@ -140,3 +140,16 @@ class FeatureMetrics:
         logger.info(f"Separation Ratio (Inter/Intra): {metrics['separation_ratio']:.3f}")
         logger.info(f"  - Intra-class distance: {metrics['intra_class_distance']:.3f}")
         logger.info(f"  - Inter-class distance: {metrics['inter_class_distance']:.3f}")
+
+
+class TrainMetrics:
+    def __init__(self):
+        self.metrics = {}
+
+    def update(self, new_metrics):
+        """Обновляет метрики"""
+        self.metrics.update(new_metrics)
+
+    def get(self):
+        """Возвращает текущие метрики"""
+        return self.metrics

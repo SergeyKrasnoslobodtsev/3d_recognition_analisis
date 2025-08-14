@@ -28,107 +28,299 @@ from .extractor import FeatureExtractor, FeatureVector
 
 
 class BrepExtractor(FeatureExtractor):
-    
-    def __init__(self, rdf_k: int = 256, lbo_k: int = 16, bins: int = 64):
-        self.name = "BRep"
-        self.rdf_k = rdf_k
-        self.lbo_k = lbo_k
-        self.bins = bins
-        
-        # Определяем размерность вектора на основе параметров
-        # RDF + h_edge + h_area + h_dih + h_deg + brep_vec + lbo_evals
-        self.feature_dim = self.rdf_k + self.bins + self.bins + self.bins + (self.bins // 2) + 10 + self.lbo_k
-        
-        logger.info(f"Инициализация '{self.name}' экстрактора. Размерность вектора: {self.feature_dim}")
+    """
+    Экстрактор 1D-последовательностей из CAD (STEP/B-Rep + треугольная сетка).
+    Формирует 7 каналов длины feature_dim (по умолчанию 256):
+      1) RDF(K)                   -> resample(feature_dim)
+      2) hist(edge_lengths, bins) -> resample
+      3) hist(face_areas, bins)   -> resample
+      4) hist(dihedral_angles, bins, [0, pi]) -> resample
+      5) hist(vertex_degrees, bins//2) -> resample
+      6) B-Rep surface-type area ratios (10) -> resample
+      7) LBO spectrum (k)         -> resample
+    Затем либо возвращает матрицу (7, feature_dim), либо агрегирует в 1D-вектор.
+    """
+
+    def __init__(
+        self,
+        rdf_k: int = 256,
+        lbo_k: int = 16,
+        bins: int = 64,
+        feature_dim: int = 256,
+        output_mode: str = "matrix",        # 'matrix' | 'pooled'
+        aggregate_method: str = "mean",     # для 'pooled': mean|max|attention
+        weld_tol: float = 1e-6
+    ):
+        super().__init__(name="BRep", model=None, aggregate_method=aggregate_method)
+        self.rdf_k = int(rdf_k)
+        self.lbo_k = int(lbo_k)
+        self.bins = int(bins)
+        self.feature_dim = int(feature_dim)
+        self.output_mode = output_mode
+        self.weld_tol = float(weld_tol)
+        logger.info(
+            f"Инициализация '{self.name}' (K={self.rdf_k}, LBO={self.lbo_k}, bins={self.bins}, "
+            f"D={self.feature_dim}, mode={self.output_mode})"
+        )
 
     def extract_single(self, data: DataModel) -> FeatureVector | None:
-        """
-        Извлекает единый вектор признаков для 3D-модели.
-        """
         shape = self._load_step_shape(data.model_path)
         if shape is None or shape.IsNull():
-            logger.warning(f"Не удалось загрузить или пустая геометрия: {data.model_path}")
+            logger.warning(f"Не удалось загрузить/пустая геометрия: {data.model_path}")
             return None
 
         try:
-            # 1. Триангуляция всей модели
+            # 1) триангуляция и извлечение V,F
             self._mesh_shape(shape, lin_deflection=0.02, ang_deflection=0.785)
             V, F = self._get_vertices_and_faces(shape)
-            logger.debug(f"Триангуляция завершена для {data.model_id}. Вершин: {V.shape[0]}, Граней: {F.shape[0]}")
             if V.shape[0] < 4 or F.shape[0] < 1:
-                logger.warning(f"Недостаточно вершин/граней после триангуляции для {data.model_id}")
+                logger.warning(f"Недостаточно геометрии после триангуляции: {data.model_id}")
                 return self._create_empty_vector(data)
 
-            # 2. Извлечение признаков на основе триангуляции
-            h_edge, h_area, h_dih, h_deg = self._compute_mesh_histograms(V, F)
-            rdf = self._compute_rdf(V, F, K=self.rdf_k)
+            # 2) сварка дублей + нормализация масштаба (инвариантность)
+            V, F = self._weld_vertices(V, F, tol=self.weld_tol)
+            V = self._normalize_vertices(V)  # центрирование и fit-to-unit-sphere
 
-            # 3. Извлечение признаков из исходной B-Rep структуры
-            brep_vec = self._brep_surface_type_hist(shape)
+            # 3) сеточные признаки (гистограммы L1)
+            h_edge, h_area, h_dih, h_deg = self._compute_mesh_histograms(V, F)  # L1 hist
 
-            # 4. Извлечение спектральных признаков
-            padded_evals = self._compute_lbo_spectrum_features(V, F, k=self.lbo_k)
+            # 4) RDF (устойчивый)
+            rdf = self._compute_rdf_robust(V, F, K=self.rdf_k)  # log1p + сглаживание
+            if rdf.size == 0:
+                rdf = np.zeros(self.rdf_k, dtype=np.float32)
 
-            # 5. Конкатенация всех признаков в строгом порядке
-            feature_vec = np.concatenate([
-                rdf, 
-                h_edge,
-                h_area,
-                h_dih,
-                h_deg,
-                brep_vec,
-                padded_evals
-            ]).astype(np.float32)
+            # 5) B-Rep surface type area ratios
+            brep_vec = self._brep_surface_type_hist(shape)  # длина 10, area-normalized
+            # 6) Лаплас-Бельтрами спектр (устойчивый)
+            lbo = self._compute_lbo_spectrum_features(V, F, k=self.lbo_k)
 
-            if feature_vec.shape[0] != self.feature_dim:
-                logger.error(f"Неверная размерность вектора для {data.model_id}."
-                             f"Ожидалось {self.feature_dim}, получено {feature_vec.shape[0]}")
-                return self._create_empty_vector(data)
+            # 7) приведение всех каналов к feature_dim
+            blocks = [
+                self._resample_to_dim(rdf, self.feature_dim),
+                self._resample_to_dim(h_edge, self.feature_dim),
+                self._resample_to_dim(h_area, self.feature_dim),
+                self._resample_to_dim(h_dih, self.feature_dim),
+                self._resample_to_dim(h_deg, self.feature_dim),
+                self._resample_to_dim(brep_vec, self.feature_dim),
+                self._resample_to_dim(lbo, self.feature_dim),
+            ]
+            feature_matrix = np.stack(blocks, axis=0).astype(np.float32)  # (7, D)
+            logger.debug(f"Матрица признаков {data.model_id}: {feature_matrix.shape}")
 
-            return FeatureVector(model_id=data.model_id, vector=feature_vec, label=data.detail_type)
+            if self.output_mode == "pooled":
+                pooled = self._aggregate_features(feature_matrix)  # (D,)
+                return FeatureVector(model_id=data.model_id, vector=pooled.astype(np.float32), label=data.detail_type)
+            else:
+                return FeatureVector(model_id=data.model_id, vector=feature_matrix, label=data.detail_type)
 
         except Exception as e:
-            logger.error(f"Ошибка при извлечении признаков для {data.model_id}: {e}")
+            logger.error(f"Ошибка извлечения признаков для {data.model_id}: {e}")
             return self._create_empty_vector(data)
 
+    # ---------------------------- Вспомогательные блоки ---------------------------- #
+
     def _create_empty_vector(self, data: DataModel) -> FeatureVector:
-        """Создает пустой (нулевой) вектор признаков."""
-        return FeatureVector(
-            model_id=data.model_id,
-            vector=np.zeros(self.feature_dim, dtype=np.float32),
-            label=data.detail_type
-        )
+        zeros = np.zeros((7, self.feature_dim), dtype=np.float32)
+        if self.output_mode == "pooled":
+            empty = self._aggregate_features(zeros)
+            return FeatureVector(model_id=data.model_id, vector=empty.astype(np.float32), label=data.detail_type)
+        return FeatureVector(model_id=data.model_id, vector=zeros, label=data.detail_type)
 
-    # --- Методы извлечения признаков ---
+    # --- нормализация и сварка --- #
+    @staticmethod
+    def _normalize_vertices(V: np.ndarray) -> np.ndarray:
+        c = V.mean(axis=0, keepdims=True)
+        Vc = V - c
+        scale = np.linalg.norm(Vc, axis=1).max() + 1e-12
+        return (Vc / scale).astype(np.float64)
 
-    def _compute_mesh_histograms(self, V: np.ndarray, F: np.ndarray):
-        """Вычисляет набор гистограмм на основе сетки."""
+    @staticmethod
+    def _weld_vertices(V: np.ndarray, F: np.ndarray, tol: float = 1e-6) -> tuple[np.ndarray, np.ndarray]:
+        """Склеить близкие вершины (устранить дубли)."""
+        if V.size == 0 or F.size == 0:
+            return V, F
+        key = np.round(V / tol).astype(np.int64)
+        _, inv, counts = np.unique(key, axis=0, return_inverse=True, return_counts=True)
+        Vw = np.zeros((counts.size, 3), dtype=np.float64)
+        np.add.at(Vw, inv, V)
+        Vw /= counts[:, None]
+        Fw = inv[F]
+        return Vw, Fw
+
+    # --- гистограммы по сетке --- #
+    def _compute_mesh_histograms(self, V: np.ndarray, F: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         E, L = self.mesh_edge_data(V, F)
         A = self.mesh_face_areas(V, F)
         D = self._mesh_dihedral_angles(V, F)
         deg = self.mesh_vertex_degrees(F, V.shape[0])
 
-        h_edge = self.hist_norm(L, bins=self.bins, log=True)
-        h_area = self.hist_norm(A, bins=self.bins, log=True)
-        h_dih = self.hist_norm(D, bins=self.bins, rng=(0, np.pi))
-        h_deg = self.hist_norm(deg, bins=self.bins // 2, rng=(0, deg.max() if deg.size else 1))
-        
+        h_edge = self._hist_l1(L, bins=self.bins, log=True)
+        h_area = self._hist_l1(A, bins=self.bins, log=True)
+        h_dih  = self._hist_l1(D, bins=self.bins, rng=(0.0, np.pi))
+        vmax = deg.max() if deg.size else 1
+        h_deg  = self._hist_l1(deg.astype(np.float64), bins=max(2, self.bins // 2), rng=(0.0, float(vmax)))
         return h_edge, h_area, h_dih, h_deg
 
+    @staticmethod
+    def _hist_l1(x: np.ndarray, bins: int, rng: tuple | None = None, log: bool = False) -> np.ndarray:
+        """L1-нормированная гистограмма (сумма=1), опция лог-преобразования."""
+        if x.size == 0:
+            return np.zeros(bins, dtype=np.float32)
+        vals = np.log10(np.clip(x, 1e-12, None)) if log else x
+        H, _ = np.histogram(vals, bins=bins, range=rng, density=False)
+        s = H.sum()
+        return (H / s if s > 0 else np.zeros_like(H)).astype(np.float32)
+
+    # --- RDF --- #
+    def _compute_rdf(self, V: np.ndarray, F: np.ndarray, K: int) -> np.ndarray:
+        c = V.mean(axis=0)
+        rmax = np.linalg.norm(V - c, axis=1).max() + 1e-12
+        dirs = self.fibonacci_sphere(K)
+        dists = np.array([self.ray_triangle_intersections(c, d, V, F) for d in dirs], dtype=np.float64)
+        dists[~np.isfinite(dists)] = rmax
+        return (dists / rmax).astype(np.float32)
+
+    def _compute_rdf_robust(self, V: np.ndarray, F: np.ndarray, K: int) -> np.ndarray:
+        rdf_raw = self._compute_rdf(V, F, K)
+        # лог-сжатие + сглаживание (устойчивость к выбросам/«зазубринам»)
+        rdf_log = np.log1p(np.maximum(rdf_raw, 0.0).astype(np.float64))
+        from scipy.ndimage import gaussian_filter1d
+        rdf_smooth = gaussian_filter1d(rdf_log, sigma=1.0)
+        return rdf_smooth.astype(np.float32)
+
+    # --- B-Rep поверхности --- #
+    @staticmethod
+    def face_area(face):
+        props = GProp_GProps()
+        brepgprop.SurfaceProperties(face, props)
+        return props.Mass()
+
+    def _brep_surface_type_hist(self, shape: TopoDS_Shape) -> np.ndarray:
+        keys = [
+            GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_Cone, GeomAbs_Sphere, GeomAbs_Torus,
+            GeomAbs_BezierSurface, GeomAbs_BSplineSurface, GeomAbs_SurfaceOfRevolution,
+            GeomAbs_SurfaceOfExtrusion, GeomAbs_OtherSurface
+        ]
+        type2area: dict[int, float] = {k: 0.0 for k in keys}
+        total_area = 0.0
+        topo = TopologyExplorer(shape)
+        for face in topo.faces():
+            A = self.face_area(face)
+            if A <= 0:
+                continue
+            surf = BRepAdaptor_Surface(face, True)
+            st = surf.GetType()
+            total_area += A
+            type2area[st] = type2area.get(st, 0.0) + A
+
+        if total_area <= 1e-12:
+            return np.zeros(len(keys), dtype=np.float32)
+
+        return np.array([type2area[k] / total_area for k in keys], dtype=np.float32)
+
+    # --- ЛБО спектр --- #
     def _compute_lbo_spectrum_features(self, V: np.ndarray, F: np.ndarray, k: int) -> np.ndarray:
-        """Вычисляет и дополняет нулями собственные значения оператора Лапласа-Бельтрами."""
-        padded_evals = np.zeros(k, dtype=np.float32)
+        padded = np.zeros(k, dtype=np.float32)
         try:
             evals, _ = self._compute_lbo_spectrum(V, F, k=k)
-            num_evals = min(len(evals), k)
-            padded_evals[:num_evals] = evals[:num_evals]
+            n = min(len(evals), k)
+            if n > 0:
+                padded[:n] = evals[:n].astype(np.float32)
         except (RuntimeError, np.linalg.LinAlgError, ValueError) as e:
-            logger.warning(f"Не удалось вычислить спектр: {e}. Вектор будет заполнен нулями.")
-        return padded_evals
+            logger.warning(f"Спектр не вычислен: {e}. Заполняю нулями.")
+        return padded
 
     @staticmethod
+    def _compute_lbo_spectrum(V, F, k=32, scale_invariant=True):
+        # площадь всей сетки
+        def total_area(V, F):
+            v0, v1, v2 = V[F[:, 0]], V[F[:, 1]], V[F[:, 2]]
+            return 0.5 * np.linalg.norm(np.cross(v1 - v0, v2 - v0), axis=1).sum()
+
+        # удалить вырожденные триугольники и пересэмплировать индексы
+        def clean_mesh(V, F, area_eps=1e-14):
+            if F.size == 0:
+                return V, F
+            area2 = np.linalg.norm(np.cross(V[F[:, 1]] - V[F[:, 0]], V[F[:, 2]] - V[F[:, 0]]), axis=1)
+            F = F[area2 > area_eps]
+            if F.size == 0:
+                return V[:0], F
+            used = np.unique(F.ravel())
+            remap = -np.ones(V.shape[0], dtype=np.int64)
+            remap[used] = np.arange(used.size)
+            return V[used], remap[F]
+
+        # оставить крупнейшую связную компоненту (исправлено: все 3 ребра, двунаправленно)
+        def keep_largest_component(V, F):
+            if F.size == 0:
+                return V, F
+            n = V.shape[0]
+            r = np.arange(F.shape[0])
+            pairs = np.stack(
+                [F[:, [0, 1]], F[:, [1, 0]], F[:, [1, 2]], F[:, [2, 1]], F[:, [2, 0]], F[:, [0, 2]]],
+                axis=0
+            ).reshape(-1, 2)
+            adj = sp.csr_matrix((np.ones(pairs.shape[0]), (pairs[:, 0], pairs[:, 1])), shape=(n, n))
+            ncomp, labels = csgraph.connected_components(adj, directed=False)
+            if ncomp <= 1:
+                return V, F
+            largest = np.argmax(np.bincount(labels))
+            mask_v = labels == largest
+            idx_old = np.where(mask_v)[0]
+            remap = -np.ones(n, dtype=np.int64)
+            remap[idx_old] = np.arange(idx_old.size)
+            Fm = remap[F]
+            Fm = Fm[(Fm >= 0).all(axis=1)]
+            return V[idx_old], Fm
+
+        # котангенс-лапласиан + барицентрическая масса
+        def build_laplacian_cotan(V, F):
+            n = V.shape[0]
+            i, j, k = F[:, 0], F[:, 1], F[:, 2]
+            vi, vj, vk = V[i], V[j], V[k]
+            area2 = np.linalg.norm(np.cross(vj - vi, vk - vi), axis=1)
+            area2_safe = np.maximum(area2, 1e-15)
+            cot_i = ((vj - vi) * (vk - vi)).sum(axis=1) / area2_safe
+            cot_j = ((vi - vj) * (vk - vj)).sum(axis=1) / area2_safe
+            cot_k = ((vi - vk) * (vj - vk)).sum(axis=1) / area2_safe
+            w_ij, w_jk, w_ki = 0.5 * cot_k, 0.5 * cot_i, 0.5 * cot_j
+            rows = np.concatenate([i, j, j, k, k, i])
+            cols = np.concatenate([j, i, k, j, i, k])
+            data = np.concatenate([-w_ij, -w_ij, -w_jk, -w_jk, -w_ki, -w_ki])
+            L = sp.coo_matrix((data, (rows, cols)), shape=(n, n)).tocsr()
+            L = L - sp.diags(L.sum(axis=1).A1)
+            M_diag = np.zeros(n)
+            tri_area = 0.5 * area2
+            np.add.at(M_diag, i, tri_area / 3.0)
+            np.add.at(M_diag, j, tri_area / 3.0)
+            np.add.at(M_diag, k, tri_area / 3.0)
+            return L, np.maximum(M_diag, 1e-15)
+
+        # pipeline
+        Vc, Fc = clean_mesh(*keep_largest_component(*clean_mesh(V, F)))
+        if Vc.shape[0] < 3 or Fc.shape[0] < 1:
+            raise RuntimeError("Недостаточно данных для спектра после чистки.")
+
+        Vn = Vc
+        if scale_invariant:
+            A = total_area(Vc, Fc)
+            if A > 0:
+                Vn = Vc / np.sqrt(A)
+
+        L, M_diag = build_laplacian_cotan(Vn, Fc)
+        n = Vn.shape[0]
+        k_solve = min(k, max(1, n - 2))
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', message='The problem size')
+            evals, evecs = spla.eigsh(L, k=k_solve, M=sp.diags(M_diag), sigma=1e-8, which='LM', tol=0)
+        order = np.argsort(evals)
+        evals = evals[order]
+        pos = evals > 1e-10
+        return evals[pos], evecs[:, order][:, pos].astype(np.float64)
+
+    # утилиты
+    @staticmethod
     def _load_step_shape(step_path: str) -> TopoDS_Shape | None:
-        """Загружает STEP-файл и возвращает TopoDS_Shape."""
         reader = STEPControl_Reader()
         if reader.ReadFile(step_path) != IFSelect_RetDone:
             logger.error(f"Не удалось прочитать STEP: {step_path}")
@@ -138,12 +330,10 @@ class BrepExtractor(FeatureExtractor):
 
     @staticmethod
     def _mesh_shape(shape, lin_deflection=0.05, ang_deflection=0.5, is_relative=True, parallel=True):
-        """Создает сетку для заданной формы."""
         BRepMesh_IncrementalMesh(shape, lin_deflection, is_relative, ang_deflection, parallel)
 
     @staticmethod
     def _get_vertices_and_faces(shape: TopoDS_Shape) -> tuple[np.ndarray, np.ndarray]:
-        """Извлекает вершины и грани из заданной формы."""
         verts_chunks, faces_chunks = [], []
         v_off = 0
         topo = TopologyExplorer(shape)
@@ -152,7 +342,6 @@ class BrepExtractor(FeatureExtractor):
             triangulation = BRep_Tool.Triangulation(face, loc)
             if triangulation is None:
                 continue
-
             trsf = loc.Transformation()
             nb_nodes = triangulation.NbNodes()
             cur_verts = np.empty((nb_nodes, 3), dtype=np.float64)
@@ -160,7 +349,6 @@ class BrepExtractor(FeatureExtractor):
                 p = triangulation.Node(i).Transformed(trsf)
                 cur_verts[i - 1] = [p.X(), p.Y(), p.Z()]
             verts_chunks.append(cur_verts)
-
             nb_tris = triangulation.NbTriangles()
             cur_faces = np.empty((nb_tris, 3), dtype=np.int64)
             for i in range(1, nb_tris + 1):
@@ -169,17 +357,12 @@ class BrepExtractor(FeatureExtractor):
                 cur_faces[i - 1] = [v_off + i1 - 1, v_off + i2 - 1, v_off + i3 - 1]
             faces_chunks.append(cur_faces)
             v_off += nb_nodes
-
         if not verts_chunks:
             return np.empty((0, 3)), np.empty((0, 3))
-        
-        V = np.vstack(verts_chunks)
-        F = np.vstack(faces_chunks)
-        return V, F
+        return np.vstack(verts_chunks), np.vstack(faces_chunks)
 
     @staticmethod
     def mesh_edge_data(V: np.ndarray, F: np.ndarray):
-        """Извлекает данные о ребрах из заданной сетки."""
         E = np.concatenate([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]], axis=0)
         E.sort(axis=1)
         E = np.unique(E, axis=0)
@@ -188,20 +371,17 @@ class BrepExtractor(FeatureExtractor):
 
     @staticmethod
     def mesh_face_areas(V: np.ndarray, F: np.ndarray):
-        """Извлекает площади граней из заданной сетки."""
         v0, v1, v2 = V[F[:, 0]], V[F[:, 1]], V[F[:, 2]]
         return 0.5 * np.linalg.norm(np.cross(v1 - v0, v2 - v0), axis=1)
 
     @staticmethod
     def mesh_face_normals(V: np.ndarray, F: np.ndarray):
-        """Извлекает нормали граней из заданной сетки."""
         v0, v1, v2 = V[F[:, 0]], V[F[:, 1]], V[F[:, 2]]
         n = np.cross(v1 - v0, v2 - v0)
         n_norm = np.linalg.norm(n, axis=1, keepdims=True) + 1e-12
         return n / n_norm
 
     def _mesh_dihedral_angles(self, V: np.ndarray, F: np.ndarray):
-        """Вычисляет диэдральные углы между гранями."""
         from collections import defaultdict
         E = np.concatenate([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]], axis=0)
         E_sorted = np.sort(E, axis=1)
@@ -209,7 +389,6 @@ class BrepExtractor(FeatureExtractor):
         edge2tris = defaultdict(list)
         for e, t in zip(map(tuple, E_sorted), tri_idx):
             edge2tris[e].append(t)
-
         N = self.mesh_face_normals(V, F)
         ang = []
         for tris in edge2tris.values():
@@ -221,23 +400,12 @@ class BrepExtractor(FeatureExtractor):
 
     @staticmethod
     def mesh_vertex_degrees(F: np.ndarray, Vn: int):
-        """Вычисляет степени вершин в заданной сетке."""
         deg = np.zeros(Vn, dtype=np.int32)
         np.add.at(deg, F.ravel(), 1)
         return deg
 
     @staticmethod
-    def hist_norm(x: np.ndarray, bins: int, rng: tuple = None, log: bool = False): # type: ignore
-        """Вычисляет нормализованную гистограмму для заданного массива."""
-        if x.size == 0:
-            return np.zeros(bins, dtype=np.float32)
-        vals = np.log10(np.clip(x, 1e-12, None)) if log else x
-        H, _ = np.histogram(vals, bins=bins, range=rng, density=True)
-        return H.astype(np.float32)
-
-    @staticmethod
     def fibonacci_sphere(n: int):
-        """Генерирует точки на сфере с использованием спиральной схемы Фибоначчи."""
         i = np.arange(n, dtype=np.float64)
         phi = (1 + 5 ** 0.5) / 2
         theta = 2 * np.pi * i / phi
@@ -248,7 +416,6 @@ class BrepExtractor(FeatureExtractor):
 
     @staticmethod
     def ray_triangle_intersections(orig: np.ndarray, dirv: np.ndarray, V: np.ndarray, F: np.ndarray):
-        """Вычисляет пересечения луча с треугольниками в заданной сетке."""
         v0, v1, v2 = V[F[:, 0]], V[F[:, 1]], V[F[:, 2]]
         eps = 1e-9
         e1, e2 = v1 - v0, v2 - v0
@@ -266,125 +433,17 @@ class BrepExtractor(FeatureExtractor):
         t_valid = np.where(cond, t, np.inf)
         return t_valid.min()
 
-    def _compute_rdf(self, V: np.ndarray, F: np.ndarray, K: int):
-        """Вычисляет радиальную распределенную функцию (RDF) для заданной сетки."""
-        c = V.mean(axis=0)
-        rmax = np.linalg.norm(V - c, axis=1).max() + 1e-9
-        dirs = self.fibonacci_sphere(K)
-        dists = np.array([self.ray_triangle_intersections(c, d, V, F) for d in dirs])
-        dists[~np.isfinite(dists)] = rmax
-        return (dists / rmax).astype(np.float32)
-
+    # приведение длины
     @staticmethod
-    def face_area(face):
-        """Вычисляет площадь грани."""
-        props = GProp_GProps()
-        brepgprop.SurfaceProperties(face, props)
-        return props.Mass()
-
-    def _brep_surface_type_hist(self, shape: TopoDS_Shape):
-        """Извлекает данные о типах поверхностей из заданной сетки."""
-        keys = [
-            GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_Cone, GeomAbs_Sphere, GeomAbs_Torus,
-            GeomAbs_BezierSurface, GeomAbs_BSplineSurface, GeomAbs_SurfaceOfRevolution,
-            GeomAbs_SurfaceOfExtrusion, GeomAbs_OtherSurface
-        ]
-        type2area = {k: 0.0 for k in keys}
-        total_area = 0.0
-        topo = TopologyExplorer(shape)
-        for face in topo.faces():
-            A = self.face_area(face)
-            if A > 0:
-                surf = BRepAdaptor_Surface(face, True)
-                st = surf.GetType()
-                total_area += A
-                type2area[st] = type2area.get(st, 0.0) + A
-        
-        if total_area <= 1e-9:
-            return np.zeros(len(keys), dtype=np.float32)
-        
-        return np.array([type2area[k] / total_area for k in keys], dtype=np.float32)
-
-    @staticmethod
-    def _compute_lbo_spectrum(V, F, k=32, scale_invariant=True):
-        """
-        Вычисляет спектр локальных биортогональных функций (LBO) для заданной сетки.
-        """
-        # Вспомогательные функции для LBO
-        def total_area(V, F):
-            """Вычисляет общую площадь треугольников в заданной сетке."""
-            v0, v1, v2 = V[F[:,0]], V[F[:,1]], V[F[:,2]]
-            return 0.5 * np.linalg.norm(np.cross(v1 - v0, v2 - v0), axis=1).sum()
-
-        def clean_mesh(V, F, area_eps=1e-14):
-            """
-            Очищает сетку, удаляя треугольники с малой площадью.
-            """
-            if F.size == 0: return V, F
-            area2 = np.linalg.norm(np.cross(V[F[:,1]] - V[F[:,0]], V[F[:,2]] - V[F[:,0]]), axis=1)
-            F = F[area2 > area_eps]
-            if F.size == 0: return V[:0], F
-            used = np.unique(F.ravel())
-            remap = -np.ones(V.shape[0], dtype=np.int64); remap[used] = np.arange(used.size)
-            return V[used], remap[F]
-
-        def keep_largest_component(V, F):
-            """
-            Сохраняет только крупнейший компонент связности в сетке.
-            """
-            if F.size == 0: return V, F
-            n = V.shape[0]
-            adj = sp.csr_matrix((np.ones(F.shape[0]*2), (F[:,[0,1]].ravel(), F[:,[1,0]].ravel())), shape=(n,n))
-            ncomp, labels = csgraph.connected_components(adj, directed=False)
-            if ncomp <= 1: return V, F
-            largest = np.argmax(np.bincount(labels))
-            mask_v = labels == largest
-            idx_old = np.where(mask_v)[0]
-            remap = -np.ones(n, dtype=np.int64); remap[idx_old] = np.arange(idx_old.size)
-            Fm = remap[F]; Fm = Fm[(Fm >= 0).all(axis=1)]
-            return V[idx_old], Fm
-
-        def build_laplacian_cotan(V, F):
-            """
-            Строит лапласиан с использованием котангенсной схемы.
-            """
-            n = V.shape[0]
-            i, j, k = F[:,0], F[:,1], F[:,2]
-            vi, vj, vk = V[i], V[j], V[k]
-            area2 = np.linalg.norm(np.cross(vj - vi, vk - vi), axis=1)
-            area2_safe = np.maximum(area2, 1e-15)
-            cot_i = ((vj - vi) * (vk - vi)).sum(axis=1) / area2_safe
-            cot_j = ((vi - vj) * (vk - vj)).sum(axis=1) / area2_safe
-            cot_k = ((vi - vk) * (vj - vk)).sum(axis=1) / area2_safe
-            w_ij, w_jk, w_ki = 0.5 * cot_k, 0.5 * cot_i, 0.5 * cot_j
-            rows = np.concatenate([i, j, j, k, k, i])
-            cols = np.concatenate([j, i, k, j, i, k])
-            data = np.concatenate([-w_ij, -w_ij, -w_jk, -w_jk, -w_ki, -w_ki])
-            L = sp.coo_matrix((data, (rows, cols)), shape=(n, n)).tocsr()
-            L = L - sp.diags(L.sum(axis=1).A1) # type: ignore
-            M_diag = np.zeros(n); tri_area = 0.5 * area2
-            np.add.at(M_diag, i, tri_area / 3.0); np.add.at(M_diag, j, tri_area / 3.0); np.add.at(M_diag, k, tri_area / 3.0)
-            return L, np.maximum(M_diag, 1e-15)
-
-        # Основная логика
-        Vc, Fc = clean_mesh(*keep_largest_component(*clean_mesh(V, F)))
-        if Vc.shape[0] < 3 or Fc.shape[0] < 1:
-            raise RuntimeError("Недостаточно данных для спектра после чистки.")
-        
-        Vn = Vc
-        if scale_invariant:
-            A = total_area(Vc, Fc)
-            if A > 0: Vn = Vc / np.sqrt(A)
-
-        L, M_diag = build_laplacian_cotan(Vn, Fc)
-        n = Vn.shape[0]
-        k_solve = min(k, max(1, n - 2))
-        
-        with warnings.catch_warnings():
-            warnings.filterwarnings('ignore', message='The problem size')
-            evals, evecs = spla.eigsh(L, k=k_solve, M=sp.diags(M_diag), sigma=1e-8, which='LM', tol=0)
-        
-        order = np.argsort(evals)
-        evals = evals[order]
-        pos = evals > 1e-10
-        return evals[pos], evecs[:, order][:, pos].astype(np.float64)
+    def _resample_to_dim(x: np.ndarray, L: int) -> np.ndarray:
+        """Линейная интерполяция/обрезка/паддинг до длины L с float32 возвратом."""
+        if x.size == 0:
+            return np.zeros(L, dtype=np.float32)
+        if x.size == L:
+            return x.astype(np.float32, copy=False)
+        # интерполяция по равномерной сетке
+        xp = np.linspace(0.0, 1.0, num=x.size, endpoint=True)
+        fp = x.astype(np.float64)
+        xq = np.linspace(0.0, 1.0, num=L, endpoint=True)
+        yq = np.interp(xq, xp, fp)
+        return yq.astype(np.float32)
