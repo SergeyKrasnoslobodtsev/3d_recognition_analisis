@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+
+sys.stdout.reconfigure(encoding='utf-8')
 # Автоматически добавляем корневую папку проекта в путь
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
