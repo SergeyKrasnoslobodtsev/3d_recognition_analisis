@@ -14,10 +14,10 @@ from OCC.Core.STEPControl import STEPControl_Reader
 from OCC.Core.IFSelect import IFSelect_RetDone
 from OCC.Core.TopAbs import TopAbs_FACE, TopAbs_EDGE, TopAbs_VERTEX
 from OCC.Core.BRepCheck import BRepCheck_Analyzer
-from OCC.Core.BRepGProp import brepgprop_VolumeProperties, brepgprop_SurfaceProperties
+from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.GProp import GProp_GProps
 from OCC.Core.Bnd import Bnd_Box
-from OCC.Core.BRepBndLib import brepbndlib_Add
+from OCC.Core.BRepBndLib import brepbndlib
 from OCC.Core.GeomAbs import (
     GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_Cone, GeomAbs_Sphere, GeomAbs_Torus,
     GeomAbs_BSplineSurface, GeomAbs_BezierSurface, GeomAbs_SurfaceOfRevolution,
@@ -79,7 +79,7 @@ def is_valid_closed(solid):
 def volume(shape):
     try:
         props = GProp_GProps()
-        brepgprop_VolumeProperties(shape, props)
+        brepgprop.VolumeProperties(shape, props)
         return float(props.Mass())
     except Exception:
         return None
@@ -88,7 +88,7 @@ def volume(shape):
 def surface_area(shape):
     try:
         props = GProp_GProps()
-        brepgprop_SurfaceProperties(shape, props)
+        brepgprop.SurfaceProperties(shape, props)
         return float(props.Mass())
     except Exception:
         return None
@@ -97,7 +97,7 @@ def surface_area(shape):
 def bbox(shape):
     try:
         box = Bnd_Box()
-        brepbndlib_Add(shape, box)
+        brepbndlib.Add(shape, box)
         xmin, ymin, zmin, xmax, ymax, zmax = box.Get()
         return (xmin, ymin, zmin, xmax, ymax, zmax)
     except Exception:

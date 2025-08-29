@@ -7,15 +7,13 @@
 
 - Предрасчёт «само-меток» (surface/curve types, габариты) — пригодится для auxiliary losses.
 
-**побочный материал для этапа**
+**Подробное описание задач**
 
-1) [UV-Net: Learning from Boundary Representations](https://openaccess.thecvf.com/content/CVPR2021/papers/Jayaraman_UV-Net_Learning_From_Boundary_Representations_CVPR_2021_paper.pdf?utm_source=chatgpt.com), 
+1) Разбираем STEP в B-Rep и извлекаем топологию: faces/edges/coedges, связи next/prev/mate и геом. параметры поверхностей/кривых.
 
+2) Для геометрии удобен UV-растр: проецируем каждую грань в (u,v) с картой кривизн/нормалей/габаритов, как в UV-Net; топологию кодируем графом (faces/edges + смежность). Это устойчиво и работает прямо на B-Rep, минуя мешинг. 
 
-2) [Self-Supervised Representation Learning for CAD](https://openaccess.thecvf.com/content/CVPR2023/papers/Jones_Self-Supervised_Representation_Learning_for_CAD_CVPR_2023_paper.pdf?utm_source=chatgpt.com)
-
-3) [Реализация статьи на GitHub Self-Supervised Representation Learning for CAD](https://github.com/zhenshihaowanlee/Self-supervised-BRep-learning-for-CAD/blob/main/Example_data/sampled_data.py)
-
+3) Альтернатива/добавка: агрегаты по типам поверхностей (plane/cylinder/cone/…): они «саморазмечиваемые» (берутся из ядра CAD) и пригодны как вспомогательные цели
 
 
 ## Этап 2 — SSL-предобучение
@@ -26,11 +24,47 @@
 
 - Валидируем на proxy-метриках: Recall@k в «каталожных» группах, где вы сами создадите пары «оригинал ↔ модификация» (скругления/фаски/отверстия).
 
+**Подробное описание задач**
+
+1) Контрастивное SSL на графе B-Rep. Аугментации: случайное скрытие/слияние граней, jitter параметров поверхностей, перестановки обходов coedge (инвариантность топологии), добавление малошумных скруглений/фасок. Парадигма наподобие SimCLR/GraphCL для CAD уже публиковалась и показала себя именно в CAD-retrieval. 
+arXiv
+SpringerLink
+
+2) Masked-entity modeling: маскируем часть граней/рёбер и предсказываем их UV-растр/типы/параметры (аналог BERT на B-Rep). Это близко к идеям self-supervised для CAD-B-Rep из CVPR-работ.
+
+*На практике: обучаем энкодер «UV-сетка + граф» (как в UV-Net) с проекционной головой в d-мерный вектор; loss — InfoNCE/NT-Xent по парам аугментированных представлений той же модели.*
+
+**побочный материал для этапа**
+
+1) [UV-Net: Learning from Boundary Representations](https://openaccess.thecvf.com/content/CVPR2021/papers/Jayaraman_UV-Net_Learning_From_Boundary_Representations_CVPR_2021_paper.pdf?utm_source=chatgpt.com), 
+
+
+2) [Self-Supervised Representation Learning for CAD](https://openaccess.thecvf.com/content/CVPR2023/papers/Jones_Self-Supervised_Representation_Learning_for_CAD_CVPR_2023_paper.pdf?utm_source=chatgpt.com)
+
+3) [Реализация статьи на GitHub Self-Supervised Representation Learning for CAD](https://github.com/zhenshihaowanlee/Self-supervised-BRep-learning-for-CAD/blob/main/Example_data/sampled_data.py)
+
+4) [Self-supervised Graph Neural Network for Mechanical CAD Retrieval](https://arxiv.org/html/2406.08863v2?utm_source=chatgpt.com)
+
 ## Этап 3 — Индекс и API
 
 - FAISS-индекс + сервис выдачи топ-k.
 
 - Реренкинг: усреднение эмбеддингов граней, затем ML-score с учётом совпадения функции симметрий/отношений размеров (feature-based rerank). 
+
+**Подробное описание задач**
+
+1) Строим ANN-индекс (FAISS) по эмбеддингам всех моделей: IVFPQ / HNSW для RAM-кейса, IVF-Flat/IVF-PQ на GPU для ускорения. 
+
+2) Для запроса «по модели»: грузим модель, считаем эмбеддинг, ищем топ-k соседей. Для крупной базы — двухступенчатый пайплайн (грубый ANN → точный re-rank косинусом/ArcFace-стилем).
+
+
+**побочный материал для этапа**
+
+1) [Библиотека для эффективного поиска по сходству и кластеризации плотных векторов](https://github.com/facebookresearch/faiss?utm_source=chatgpt.com)
+
+2) [Манула Faiss](https://faiss.ai/index.html?utm_source=chatgpt.com)
+
+3) [Faiss: A library for efficient similarity search](https://engineering.fb.com/2017/03/29/data-infrastructure/faiss-a-library-for-efficient-similarity-search/?utm_source=chatgpt.com)
 
 ## Этап 4 — Подсветка отличий
 
@@ -38,8 +72,21 @@
 
 - Поиск соответствий граней (эмбеддинг граней + топоконтекст) и рендер heatmap «что добавлено/удалено/изменено».
 
+
+**Подробное описание задач**
+
+1) Сопоставление граней: после выдачи топ-k выравниваем пару моделей (умный ICP на поверхностях/ориентирах B-Rep, без триангуляции). Затем по графу находим соответствия граней (например, Hungarian по сходству эмбеддингов граней + топологическим штрафам).
+
+2) Карта отличий: помечаем unmatched/изменённые грани; показываем heatmap расхождений (нормали/кривизна/offset в мировом пространстве) — так пользователь видит фаски/скругления/отверстия, которых нет в исходнике.
+
 ## Этап 5 — Текст/фильтры (MVP+)
 
 - Псевдокорпус описаний из B-Rep-атрибутов → контрастивная привязка текста к эмбеддингам моделей.
 
 - UI-фильтры поверх предрасчитанных признаков (число отверстий, радиусы, bounding box и пр.).
+
+**Подробное описание задач**
+
+1) Текст → модель: обучаем кросс-модальный слой (CLIP-стиль) на парах «псевдописания ↔ модель»: описания можно сгенерировать из атрибутов B-Rep (типы поверхностей, симметрии, bounding box, число отверстий) и из метаданных. Добавить немного ручной валидации/синтетики.
+
+2) Фильтры: мгновенно реализуются по вычислимым признакам (размеры, масса материала, число/радиусы отверстий, наличие резьбы, симметрия, min wall thickness и т.д.) — всё извлекается автоматически из B-Rep. Обзор по retrieval в CAD подтверждает ценность таких дескрипторов.
